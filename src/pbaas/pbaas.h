@@ -53,6 +53,10 @@ static const uint32_t PBAAS_PROMOTE_EXCHANGE_RATE_TEST_HEIGHT = 171274;
 static const uint32_t PBAAS_NOTARIZATION_ORDER_HEIGHT = 3227685;
 static const uint32_t PBAAS_NOTARIZATION_ORDER_VARRR_HEIGHT = 238210;
 static const uint32_t PBAAS_NOTARIZATION_ORDER_VDEX_HEIGHT = 68730;
+static const uint32_t PBAAS_SCHEDULED_PROTOCOL_UPGRADE_01 = 1731002400;
+static const uint32_t PBAAS_SCHEDULED_PROTOCOL_TESTNET_UPGRADE_01 = 1730228400;
+static const uint32_t PBAAS_SCHEDULED_PROTOCOL_UPGRADE_02 = 1732471200; // (GMT): Sunday, November 24, 2024 6:00:00 PM
+static const uint32_t PBAAS_SCHEDULED_PROTOCOL_TESTNET_UPGRADE_02 = 1731373200; // (GMT): Tuesday, November 12, 2024 1:00:00 AM
 
 class CUpgradeDescriptor
 {
@@ -664,7 +668,8 @@ public:
     bool FindEarnedNotarizations(std::vector<CObjectFinalization> &finalization, std::vector<CAddressIndexDbEntry>  *pEarnedNotarizationIndex=nullptr) const;
     static bool FindFinalizedIndexByVDXFKey(const uint160 &notarizationIdxKey,
                                             CObjectFinalization &confirmedFinalization,
-                                            CAddressIndexDbEntry &earnedNotarizationIndex);
+                                            CAddressIndexDbEntry &earnedNotarizationIndex,
+                                            bool selectLast=false);
     static bool FindFinalizedIndexesByVDXFKey(const uint160 &notarizationIdxKey,
                                               std::vector<CObjectFinalization> &confirmedFinalizations,
                                               std::vector<CAddressIndexDbEntry> &earnedNotarizationIndex);
@@ -1231,6 +1236,7 @@ public:
     bool vARRRUpdateEnabled(uint32_t height) const;
     uint160 vARRRChainID() const;
     uint160 vDEXChainID() const;
+    uint160 Chips777TestnetChainID() const;
     bool ForceIdentityUpgrade(uint32_t height) const;
     bool ForceIdentityUnlock(uint32_t height) const;
     bool IdentityLockOverride(const CIdentity &identity, uint32_t height) const;
@@ -1241,6 +1247,10 @@ public:
     bool CrossChainPBaaSProofFix(const uint160 &sysID, uint32_t height) const;
     bool BlockOneIDUpgrade() const;
     bool IsPromoteExchangeRate(uint32_t height) const;
+    int CheckPastRealTime(uint32_t nTime, int64_t height=0) const;
+    bool IsUpgrade01Active(int64_t height=0) const;
+    bool IsUpgrade02Active(int64_t height=0) const;
+
     uint32_t GetChainBranchId(const uint160 &sysID, int nHeight, const Consensus::Params& params) const;
 
     std::vector<CCurrencyDefinition> GetMergeMinedChains()
@@ -1510,9 +1520,9 @@ CTxOut MakeCC1of2Vout(uint8_t evalcode, CAmount nValue, CPubKey pk1, CPubKey pk2
     vout = CTxOut(nValue,CCPubKey(payoutCond));
     cc_free(payoutCond);
 
-    std::vector<CPubKey> vpk({pk1, pk2});
+    std::vector<CTxDestination> vdest({CTxDestination(pk1), CTxDestination(pk2)});
     std::vector<std::vector<unsigned char>> vvch({::AsVector((const TOBJ)obj)});
-    COptCCParams vParams = COptCCParams(COptCCParams::VERSION_V2, evalcode, 1, 2, vpk, vvch);
+    COptCCParams vParams = COptCCParams(COptCCParams::VERSION_V2, evalcode, 1, 2, vdest, vvch);
 
     // add the object to the end of the script
     vout.scriptPubKey << vParams.AsVector() << OP_DROP;

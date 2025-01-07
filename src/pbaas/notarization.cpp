@@ -4481,7 +4481,7 @@ std::tuple<uint32_t, CUTXORef, CPBaaSNotarization> GetLastConfirmedNotarization(
                             // remove it and try again
                             if (checkBlockHash.IsNull())
                             {
-                                std::__cxx11::list<CTransaction> removed;
+                                std::list<CTransaction> removed;
                                 mempool.remove(checkTx, removed, true);
                                 unspentFinalizations = CObjectFinalization::GetUnspentConfirmedFinalizations(curID);
                                 exitLoop = !unspentFinalizations.size();
@@ -4899,6 +4899,20 @@ bool CPBaaSNotarization::CreateAcceptedNotarization(const CCurrencyDefinition &e
         {
             return state.Error(errorPrefix + "invalid prior notarization proof 3");
         }
+    }
+
+    // we've found the priorAgreedNotarization on the chain, if the one we are trying to add is already on-chain or in mempool,
+    // do not add another instance
+    CNativeHashWriter hwCheck;
+    hwCheck << newNotarization;
+    uint256 objHashCheck = hwCheck.GetHash();
+    std::vector<std::pair<CMempoolAddressDeltaKey, CMempoolAddressDelta>> memResults;
+    std::vector<CAddressIndexDbEntry> addressIndex;
+    uint160 notarizationIdxKey = CCrossChainRPCData::GetConditionID(newNotarization.currencyID, CPBaaSNotarization::EarnedNotarizationKey(), objHashCheck);
+    if ((mempool.getAddressIndex({{notarizationIdxKey, CScript::P2IDX}}, memResults) && memResults.size()) ||
+        GetAddressIndex(notarizationIdxKey, CScript::P2IDX, addressIndex) && addressIndex.size())
+    {
+        return state.Error(errorPrefix + " Cannot create accepted notarization. Notarization already present on chain.");
     }
 
     // challenge roots must include all UTXOs between our last agreed index and the end
@@ -6124,9 +6138,9 @@ bool CPBaaSNotarization::CreateEarnedNotarization(const CRPCChainData &externalS
                         autoProof.chainObjects[1]->objectType == CHAINOBJ_PROOF_ROOT &&
                         autoProof.chainObjects[2]->objectType == CHAINOBJ_TRANSACTION_PROOF)
                     {
-                        uint32_t futureHeight = ((CChainObject<CProofRoot> *)autoProof.chainObjects[1])->object.rootHeight;
-                        if (futureHeight > chainActive.Height() ||
-                            ((CChainObject<CProofRoot> *)autoProof.chainObjects[1])->object != CProofRoot::GetProofRoot(futureHeight))
+                        CProofRoot futureRoot = ((CChainObject<CProofRoot> *)autoProof.chainObjects[1])->object;
+                        if (futureRoot.rootHeight > chainActive.Height() ||
+                            (futureRoot != CProofRoot::GetProofRoot(futureRoot.rootHeight)))
                         {
                             // we don't agree with this one because of the proof root, so we will ignore its existence
                             isValid = false;
@@ -6140,9 +6154,9 @@ bool CPBaaSNotarization::CreateEarnedNotarization(const CRPCChainData &externalS
             }
             if (isValid)
             {
-                CPBaaSNotarization priorNotarization;
+                CPBaaSNotarization localPriorNotarization;
                 if (i &&
-                    !crosschainCND.vtx[i].second.CheckCrossNotarizationProgression(systemDef, priorNotarization, height + 1, state))
+                    !crosschainCND.vtx[i].second.CheckCrossNotarizationProgression(systemDef, localPriorNotarization, height + 1, state))
                 {
                     isValid = false;
                 }
@@ -8819,7 +8833,8 @@ bool CallNotary(const CRPCChainData &notarySystem, std::string command, const Un
 
 bool CPBaaSNotarization::FindFinalizedIndexByVDXFKey(const uint160 &notarizationIdxKey,
                                                      CObjectFinalization &confirmedFinalization,
-                                                     CAddressIndexDbEntry &earnedNotarizationIndex)
+                                                     CAddressIndexDbEntry &earnedNotarizationIndex,
+                                                     bool selectLast)
 {
     bool retVal = false;
     std::vector<CAddressIndexDbEntry> addressIndex;
@@ -8832,14 +8847,30 @@ bool CPBaaSNotarization::FindFinalizedIndexByVDXFKey(const uint160 &notarization
         return retVal;
     }
 
-    for (auto &oneIndexEntry : addressIndex)
+    if (selectLast)
     {
-        if (oneIndexEntry.first.spending)
+        for (int i = addressIndex.size() - 1; i >= 0; i--)
         {
-            continue;
+            auto &oneIndexEntry = addressIndex[i];
+            if (oneIndexEntry.first.spending)
+            {
+                continue;
+            }
+            earnedNotarizationIndex = oneIndexEntry;
+            break;
         }
-        earnedNotarizationIndex = oneIndexEntry;
-        break;
+    }
+    else
+    {
+        for (auto &oneIndexEntry : addressIndex)
+        {
+            if (oneIndexEntry.first.spending)
+            {
+                continue;
+            }
+            earnedNotarizationIndex = oneIndexEntry;
+            break;
+        }
     }
     if (!earnedNotarizationIndex.first.blockHeight)
     {
@@ -9026,7 +9057,7 @@ bool CPBaaSNotarization::FindEarnedNotarization(CObjectFinalization &confirmedFi
     hw << checkNotarization;
     uint256 objHash = hw.GetHash();
     uint160 notarizationIdxKey = CCrossChainRPCData::GetConditionID(currencyID, CPBaaSNotarization::EarnedNotarizationKey(), objHash);
-    return FindFinalizedIndexByVDXFKey(notarizationIdxKey, confirmedFinalization, earnedNotarizationIndex);
+    return FindFinalizedIndexByVDXFKey(notarizationIdxKey, confirmedFinalization, earnedNotarizationIndex, true);
 }
 
 bool CPBaaSNotarization::FindEarnedNotarizations(std::vector<CObjectFinalization> &confirmedFinalizations, std::vector<CAddressIndexDbEntry> *pEarnedNotarizationIndex) const
@@ -10559,7 +10590,7 @@ bool PreCheckAcceptedOrEarnedNotarization(const CTransaction &tx, int32_t outNum
                 }
 
                 // ensure that this is part of an export transaction
-                bool exportOutNum = -1;
+                int exportOutNum = -1;
                 CCrossChainExport exportToCheck;
                 for (int loop = 0; loop < tx.vout.size(); loop++)
                 {
